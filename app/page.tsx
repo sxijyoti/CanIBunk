@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider } from 'next-themes';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import ThemeToggle from '@/components/ThemeToggle';
+import PersistentHeader from '@/components/PersistentHeader';
 import LandingPage from '@/components/LandingPage';
 import TimetableSetup from '@/components/TimetableSetup';
 import SemesterSetup from '@/components/SemesterSetup';
@@ -42,10 +43,13 @@ export type SemesterData = {
   startDate: string;
   endDate: string;
   courses: Course[];
-  selectedCourse: string;
+  selectedCourses: string[]; // Changed from single course to multiple courses
+  selectedCourse: string; // Keep for backward compatibility, will be the first selected course
 };
 
 export default function Home() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [currentStep, setCurrentStep] = useState<'landing' | 'menu' | 'timetable' | 'semester' | 'dashboard'>('landing');
   const [timetableData, setTimetableData] = useState<TimetableData | null>(null);
   const [semesterData, setSemesterData] = useState<SemesterData | null>(null);
@@ -63,53 +67,75 @@ export default function Home() {
       setSemesterData(JSON.parse(savedSemester));
     }
     
-    // If both are saved, go to dashboard
-    if (savedTimetable && savedSemester) {
+    // Check URL params for navigation
+    const step = searchParams.get('step');
+    if (step && ['landing', 'menu', 'timetable', 'semester', 'dashboard'].includes(step)) {
+      setCurrentStep(step as any);
+    } else if (savedTimetable && savedSemester) {
       setCurrentStep('dashboard');
     }
-  }, []);
+  }, [searchParams]);
+
+  const navigateToStep = (step: 'landing' | 'menu' | 'timetable' | 'semester' | 'dashboard') => {
+    setCurrentStep(step);
+    const url = new URL(window.location.href);
+    url.searchParams.set('step', step);
+    router.push(url.pathname + url.search, { scroll: false });
+  };
 
   const handleTimetableComplete = (data: TimetableData) => {
     setTimetableData(data);
     localStorage.setItem('canibunk-timetable', JSON.stringify(data));
-    setCurrentStep('semester');
+    navigateToStep('semester');
   };
 
   const handleSemesterComplete = (data: SemesterData) => {
     setSemesterData(data);
     localStorage.setItem('canibunk-semester', JSON.stringify(data));
-    setCurrentStep('dashboard');
+    navigateToStep('dashboard');
   };
 
   const resetData = () => {
     localStorage.removeItem('canibunk-timetable');
     localStorage.removeItem('canibunk-semester');
+    localStorage.removeItem('canibunk-calendar');
+    localStorage.removeItem('canibunk-global-status');
     setTimetableData(null);
     setSemesterData(null);
-    setCurrentStep('landing');
+    navigateToStep('landing');
   };
 
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+    <ThemeProvider attribute="class" defaultTheme="dark" forcedTheme="dark">
       <div className="min-h-screen bg-background text-foreground">
+        <PersistentHeader 
+          currentStep={currentStep}
+          onNavigate={navigateToStep}
+          onBack={currentStep !== 'landing' ? () => {
+            if (currentStep === 'menu') navigateToStep('landing');
+            else if (currentStep === 'timetable' || currentStep === 'semester') navigateToStep('menu');
+            else if (currentStep === 'dashboard') navigateToStep('menu');
+          } : undefined}
+          showBack={currentStep !== 'landing'}
+        />
         {currentStep === 'landing' && (
-          <LandingPage onGetStarted={() => setCurrentStep('menu')} />
+          <LandingPage onGetStarted={() => navigateToStep('menu')} />
         )}
         
         {currentStep === 'menu' && (
           <MenuSelection
-            onSelectTimetable={() => setCurrentStep('timetable')}
-            onSelectSemester={() => setCurrentStep('semester')}
+            onSelectTimetable={() => navigateToStep('timetable')}
+            onSelectSemester={() => navigateToStep('semester')}
             hasExistingData={!!(timetableData && semesterData)}
-            onGoToDashboard={() => setCurrentStep('dashboard')}
-            onBack={() => setCurrentStep('landing')}
+            onGoToDashboard={() => navigateToStep('dashboard')}
+            onBack={() => navigateToStep('landing')}
           />
         )}
         
         {currentStep === 'timetable' && (
           <TimetableSetup 
             onComplete={handleTimetableComplete}
-            onBack={() => setCurrentStep('menu')}
+            onBack={() => navigateToStep('menu')}
             existingData={timetableData}
           />
         )}
@@ -117,7 +143,7 @@ export default function Home() {
         {currentStep === 'semester' && (
           <SemesterSetup 
             onComplete={handleSemesterComplete}
-            onBack={() => setCurrentStep('menu')}
+            onBack={() => navigateToStep('menu')}
             existingData={semesterData}
           />
         )}
@@ -127,7 +153,7 @@ export default function Home() {
             timetableData={timetableData}
             semesterData={semesterData}
             onReset={resetData}
-            onEdit={() => setCurrentStep('menu')}
+            onEdit={() => navigateToStep('menu')}
           />
         )}
         
@@ -153,12 +179,6 @@ function MenuSelection({
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-card/50 flex items-center justify-center p-4">
       {/* Theme Toggle and Back Button */}
-      <div className="absolute top-6 right-6 z-10 flex items-center space-x-2">
-        <Button variant="outline" size="icon" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <ThemeToggle />
-      </div>
       
       <div className="max-w-md w-full space-y-6">
         <div className="text-center space-y-2">

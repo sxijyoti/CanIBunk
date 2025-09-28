@@ -5,10 +5,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+
 import { ArrowLeft } from 'lucide-react';
 import { SemesterData, Course } from '@/app/page';
-import ThemeToggle from '@/components/ThemeToggle';
 import { toast } from 'sonner';
 
 const COURSE_COLORS = [
@@ -28,29 +27,40 @@ export default function SemesterSetup({
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [courses, setCourses] = useState<Course[]>([]);
-  const [selectedCourse, setSelectedCourse] = useState('');
+  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+  const [selectedCourse, setSelectedCourse] = useState(''); // Keep for backward compatibility
 
   useEffect(() => {
-    if (existingData) {
-      setStartDate(existingData.startDate);
-      setEndDate(existingData.endDate);
-      setCourses(existingData.courses);
-      setSelectedCourse(existingData.selectedCourse);
-    } else {
-      // Load courses from timetable if available
-      const timetableData = localStorage.getItem('canibunk-timetable');
-      if (timetableData) {
-        const parsed = JSON.parse(timetableData);
-        const uniqueCourseIds = [...new Set(parsed.timeSlots.map((slot: any) => slot.courseId).filter(Boolean))];
-        const coursesFromTimetable = uniqueCourseIds.map((courseId: string, index: number) => ({
-          id: courseId,
-          name: courseId,
-          color: COURSE_COLORS[index % COURSE_COLORS.length],
-          totalClasses: 0,
-          attendedClasses: 0
-        }));
+    // Always refresh courses from timetable to get the latest data
+    const timetableData = localStorage.getItem('canibunk-timetable');
+    if (timetableData) {
+      const parsed = JSON.parse(timetableData);
+      const uniqueCourseIds = Array.from(new Set(parsed.timeSlots.map((slot: any) => slot.courseId).filter(Boolean))) as string[];
+      const coursesFromTimetable = uniqueCourseIds.map((courseId: string, index: number) => ({
+        id: courseId,
+        name: courseId,
+        color: COURSE_COLORS[index % COURSE_COLORS.length],
+        totalClasses: 0,
+        attendedClasses: 0
+      }));
+      
+      // If we have existing data, merge the attendance numbers but use fresh course list
+      if (existingData) {
+        const mergedCourses = coursesFromTimetable.map(course => {
+          const existingCourse = existingData.courses.find(c => c.id === course.id);
+          return existingCourse ? { ...course, totalClasses: existingCourse.totalClasses, attendedClasses: existingCourse.attendedClasses } : course;
+        });
+        setCourses(mergedCourses);
+        setStartDate(existingData.startDate);
+        setEndDate(existingData.endDate);
+      } else {
         setCourses(coursesFromTimetable);
       }
+      
+      // Automatically select all courses
+      const allCourseIds = coursesFromTimetable.map(c => c.id);
+      setSelectedCourses(allCourseIds);
+      setSelectedCourse(allCourseIds[0] || '');
     }
   }, [existingData]);
 
@@ -67,17 +77,13 @@ export default function SemesterSetup({
       toast.error('Please set semester start and end dates');
       return;
     }
-    
-    if (!selectedCourse) {
-      toast.error('Please select a course to track');
-      return;
-    }
 
     const data: SemesterData = {
       startDate,
       endDate,
       courses,
-      selectedCourse
+      selectedCourses,
+      selectedCourse: selectedCourses[0] // First selected course for backward compatibility
     };
     
     onComplete(data);
@@ -98,7 +104,6 @@ export default function SemesterSetup({
               <p className="text-muted-foreground">Configure your semester and course attendance</p>
             </div>
           </div>
-          <ThemeToggle />
         </div>
 
         <Card>
@@ -128,82 +133,60 @@ export default function SemesterSetup({
               </div>
             </div>
 
-            {/* Course Details */}
-            {/* Course Selection for Tracking */}
-            <div>
-              <Label htmlFor="selectedCourse">Select Course to Track</Label>
-              <Select value={selectedCourse} onValueChange={setSelectedCourse}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose a course to track for bunking" />
-                </SelectTrigger>
-                <SelectContent>
-                  {courses.map(course => (
-                    <SelectItem key={course.id} value={course.id}>
-                      <div className="flex items-center space-x-2">
-                        <div 
-                          className="w-3 h-3 rounded-full"
-                          style={{ backgroundColor: course.color }}
-                        />
-                        <span>{course.name}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Attendance Details for Selected Course Only */}
-            {selectedCourse && (
+            {/* Attendance Details for All Courses */}
+            <div className="space-y-4">
+              <Label className="text-base font-medium">Attendance Details</Label>
               <div className="space-y-4">
-                <Label className="text-base font-medium">Attendance Details for {courses.find(c => c.id === selectedCourse)?.name}</Label>
-                <div className="p-4 border border-border rounded-lg space-y-4">
-                  <div className="flex items-center space-x-3">
-                    <div 
-                      className="w-4 h-4 rounded-full"
-                      style={{ backgroundColor: courses.find(c => c.id === selectedCourse)?.color }}
-                    />
-                    <h3 className="font-medium">{courses.find(c => c.id === selectedCourse)?.name}</h3>
-                  </div>
-                  
-                  <div className="grid md:grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor={`total-${selectedCourse}`}>Total Classes So Far</Label>
-                      <Input
-                        id={`total-${selectedCourse}`}
-                        type="number"
-                        min="0"
-                        value={courses.find(c => c.id === selectedCourse)?.totalClasses || 0}
-                        onChange={(e) => updateCourse(selectedCourse, 'totalClasses', Number(e.target.value))}
-                        placeholder="0"
+                {courses.map(course => (
+                  <div key={course.id} className="p-4 border border-border rounded-lg space-y-4">
+                    <div className="flex items-center space-x-3">
+                      <div 
+                        className="w-4 h-4 rounded-full"
+                        style={{ backgroundColor: course.color }}
                       />
+                      <h3 className="font-medium">{course.name}</h3>
                     </div>
-                    <div>
-                      <Label htmlFor={`attended-${selectedCourse}`}>Classes Attended</Label>
-                      <Input
-                        id={`attended-${selectedCourse}`}
-                        type="number"
-                        min="0"
-                        max={courses.find(c => c.id === selectedCourse)?.totalClasses || 0}
-                        value={courses.find(c => c.id === selectedCourse)?.attendedClasses || 0}
-                        onChange={(e) => updateCourse(selectedCourse, 'attendedClasses', Number(e.target.value))}
-                        placeholder="0"
-                      />
+                    
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div>
+                        <Label htmlFor={`attended-${course.id}`}>Classes Attended</Label>
+                        <Input
+                          id={`attended-${course.id}`}
+                          type="number"
+                          min="0"
+                          max={course.totalClasses || undefined}
+                          value={course.attendedClasses}
+                          onChange={(e) => updateCourse(course.id, 'attendedClasses', Number(e.target.value))}
+                          placeholder="0"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor={`total-${course.id}`}>Total Classes So Far</Label>
+                        <Input
+                          id={`total-${course.id}`}
+                          type="number"
+                          min="0"
+                          value={course.totalClasses}
+                          onChange={(e) => updateCourse(course.id, 'totalClasses', Number(e.target.value))}
+                          placeholder="0"
+                        />
+                      </div>
                     </div>
+                    
+                    {course.totalClasses > 0 && (
+                      <div className="text-sm text-muted-foreground">
+                        Current attendance: {((course.attendedClasses / course.totalClasses) * 100).toFixed(1)}%
+                      </div>
+                    )}
                   </div>
-                  
-                  {(courses.find(c => c.id === selectedCourse)?.totalClasses || 0) > 0 && (
-                    <div className="text-sm text-muted-foreground">
-                      Current attendance: {(((courses.find(c => c.id === selectedCourse)?.attendedClasses || 0) / (courses.find(c => c.id === selectedCourse)?.totalClasses || 1)) * 100).toFixed(1)}%
-                    </div>
-                  )}
-                </div>
+                ))}
               </div>
-            )}
+            </div>
 
             <Button 
               onClick={handleComplete} 
               className="w-full"
-              disabled={!selectedCourse}
+              disabled={courses.length === 0}
             >
               Complete Setup
             </Button>
