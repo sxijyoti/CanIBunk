@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -89,13 +89,28 @@ export default function Dashboard({
     };
   }, [clickedDay]);
 
-
+  // Helper function to get day name consistently
+  const getDayName = (date: Date): string => {
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    // Use getDay() directly from the local date object to avoid timezone issues
+    return dayNames[date.getDay()];
+  };
 
   const generateCalendarData = () => {
     const startDate = new Date(semesterData.startDate);
     const endDate = new Date(semesterData.endDate);
     const monthStart = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
     const monthEnd = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
+    
+    // Debug: Show what's in the timetable
+    console.log(`[TIMETABLE DEBUG] Working days: ${timetableData.workingDays}`);
+    const activeSubjectSlots = timetableData.timeSlots.filter(slot => slot.courseId === activeSubject);
+    console.log(`[TIMETABLE DEBUG] Time slots for ${activeSubject}:`, activeSubjectSlots);
+    
+    // Show which days actually have classes
+    const uniqueDaysSet = new Set(activeSubjectSlots.map(slot => slot.day));
+    const uniqueDays = Array.from(uniqueDaysSet);
+    console.log(`[TIMETABLE DEBUG] Days with classes for ${activeSubject}: ${uniqueDays.join(', ')}`);
     
     const calendarStart = new Date(monthStart);
     calendarStart.setDate(calendarStart.getDate() - monthStart.getDay());
@@ -129,25 +144,35 @@ export default function Dashboard({
     while (currentDate <= calendarEnd) {
       const dateStr = currentDate.toISOString().split('T')[0];
       const isInSemester = currentDate >= startDate && currentDate <= endDate;
-      const dayName = currentDate.toLocaleDateString('en-US', { weekday: 'long' });
-      const isWorkingDay = timetableData.workingDays.includes(dayName);
+      const dayName = getDayName(currentDate);
       
       let classCount = 0;
-      if (isInSemester && isWorkingDay) {
+      if (isInSemester) {
+        // Count actual classes for this day and subject
         classCount = timetableData.timeSlots.filter(
           slot => slot.day === dayName && slot.courseId === activeSubject
         ).length;
+        
+        // Debug for specific days
+        if (dayName === 'Tuesday' || dayName === 'Wednesday' || dayName === 'Thursday' || dayName === 'Friday') {
+          console.log(`[DAY DEBUG] ${currentDate.toISOString().split('T')[0]} -> ${dayName}, Classes: ${classCount}`);
+          console.log(`[DAY DEBUG] Raw date object:`, currentDate);
+          console.log(`[DAY DEBUG] Date parts: ${currentDate.getFullYear()}-${(currentDate.getMonth() + 1).toString().padStart(2, '0')}-${currentDate.getDate().toString().padStart(2, '0')}`);
+          console.log(`[DAY DEBUG] Calendar position: ${currentDate.getDay()} (0=Sunday, 1=Monday, etc.)`);
+        }
       }
+      
+      // A day is considered a "working day" only if it has classes for the active subject
+      const isWorkingDay = classCount > 0;
 
       const savedDay = savedCalendarData[dateStr];
       const globalStatusForDate = globalStatus[dateStr];
       
       // Default status logic: 
-      // - If in semester and working day with classes: 'attending'
-      // - If no classes but in semester and working day: 'normal' 
-      // - If not in semester or not working day: 'normal'
+      // - If in semester and has classes: 'attending'
+      // - Otherwise: 'normal'
       let defaultStatus: DayStatus = 'normal';
-      if (isInSemester && isWorkingDay && classCount > 0) {
+      if (isInSemester && classCount > 0) {
         defaultStatus = 'attending';
       }
       
@@ -161,12 +186,19 @@ export default function Dashboard({
       
       const bunkedClasses = savedDay?.bunkedClasses || 0;
 
-      days.push({
+      const dayObj = {
         date: new Date(currentDate),
         status,
         classCount,
         bunkedClasses
-      });
+      };
+      
+      // Debug specific dates
+      if (classCount > 0) {
+        console.log(`[CALENDAR GEN] Generated day: ${dayObj.date.toISOString().split('T')[0]} -> ${getDayName(dayObj.date)}, Classes: ${classCount}`);
+      }
+      
+      days.push(dayObj);
 
       currentDate.setDate(currentDate.getDate() + 1);
     }
@@ -217,7 +249,7 @@ export default function Dashboard({
             }
           }
         });
-      } else if (day.status === 'attending' || day.status === 'bunking') {
+      } else if (day.status === 'attending' || day.status === 'bunking' || day.status === 'normal') {
         // Remove from global status if changing back to normal
         delete globalStatus[dateStr];
       }
@@ -233,6 +265,13 @@ export default function Dashboard({
     const semStart = new Date(semesterData.startDate);
     const semEnd = new Date(semesterData.endDate);
     const dayDate = calendarData[dayIndex].date;
+    
+    // Debug to verify day calculation
+
+    
+
+    
+
     
     if (dayDate < today) {
       toast.error('Cannot modify past dates');
@@ -261,6 +300,8 @@ export default function Dashboard({
       }
       setCalendarData(updatedData);
       saveCalendarData(updatedData);
+      // Regenerate calendar data to ensure all subjects show the holiday
+      setTimeout(() => generateCalendarData(), 0);
     } else if (markingMode === 'exam') {
       // Exam marking mode - cycle: normal/attending -> exam -> normal
       if (day.status === 'exam') {
@@ -275,23 +316,45 @@ export default function Dashboard({
       }
       setCalendarData(updatedData);
       saveCalendarData(updatedData);
+      // Regenerate calendar data to ensure all subjects show the exam
+      setTimeout(() => generateCalendarData(), 0);
     } else {
       // Normal mode
       if (day.status === 'holiday') {
         // If it's a holiday, convert back to normal first
-        day.status = day.classCount > 0 ? 'attending' : 'holiday';
+        day.status = day.classCount > 0 ? 'attending' : 'normal';
         day.bunkedClasses = 0;
+        
+        // Remove from global status
+        const globalData = localStorage.getItem('canibunk-global-status') || '{}';
+        const globalStatus = JSON.parse(globalData);
+        const dateStr = day.date.toISOString().split('T')[0];
+        delete globalStatus[dateStr];
+        localStorage.setItem('canibunk-global-status', JSON.stringify(globalStatus));
+        
         toast.success('Converted from holiday to normal');
         setCalendarData(updatedData);
         saveCalendarData(updatedData);
+        // Regenerate calendar data to ensure changes are reflected
+        setTimeout(() => generateCalendarData(), 0);
         return;
       } else if (day.status === 'exam') {
         // If it's an exam, convert back to normal first
-        day.status = day.classCount > 0 ? 'attending' : 'holiday';
+        day.status = day.classCount > 0 ? 'attending' : 'normal';
         day.bunkedClasses = 0;
+        
+        // Remove from global status
+        const globalData = localStorage.getItem('canibunk-global-status') || '{}';
+        const globalStatus = JSON.parse(globalData);
+        const dateStr = day.date.toISOString().split('T')[0];
+        delete globalStatus[dateStr];
+        localStorage.setItem('canibunk-global-status', JSON.stringify(globalStatus));
+        
         toast.success('Converted from exam to normal');
         setCalendarData(updatedData);
         saveCalendarData(updatedData);
+        // Regenerate calendar data to ensure changes are reflected
+        setTimeout(() => generateCalendarData(), 0);
         return;
       }
 
@@ -421,7 +484,7 @@ export default function Dashboard({
     return maxBunkable;
   };
 
-  const calculateAttendance = () => {
+  const calculateBasicAttendance = () => {
     const selectedCourseData = semesterData.courses.find(c => c.id === activeSubject);
     if (!selectedCourseData) return { current: 0, predicted: 0, totalClasses: 0, attendedClasses: 0 };
 
@@ -430,44 +493,88 @@ export default function Dashboard({
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Calculate past holidays/exams to adjust the original semester data
-    let pastHolidayExamClasses = 0;
-    let futureClasses = 0;
-    let bunkedFutureClasses = 0;
-
-    // Generate all days in the semester to count holidays/exams and future classes
+    // Calculate total future classes from timetable (no exclusions yet)
+    let totalFutureClasses = 0;
     const currentDate = new Date(semesterStart);
+    
     while (currentDate <= semesterEnd) {
-      const dayName = currentDate.toLocaleDateString('en-US', { weekday: 'long' });
+      const dayName = getDayName(currentDate);
       const isWorkingDay = timetableData.workingDays.includes(dayName);
       
-      if (isWorkingDay) {
-        // Count classes for this day
+      if (isWorkingDay && currentDate >= today) {
+        const dayClassCount = timetableData.timeSlots.filter(
+          slot => slot.day === dayName && slot.courseId === activeSubject
+        ).length;
+        totalFutureClasses += dayClassCount;
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    // Basic prediction: past classes + all future classes (assuming 100% attendance)
+    const totalPastClasses = selectedCourseData.totalClasses;
+    const attendedPastClasses = selectedCourseData.attendedClasses;
+    const basicTotalClasses = totalPastClasses + totalFutureClasses;
+    const basicAttendedClasses = attendedPastClasses + totalFutureClasses; // Assume 100% future attendance
+    
+    return {
+      current: totalPastClasses > 0 ? (attendedPastClasses / totalPastClasses) * 100 : 0,
+      predicted: basicTotalClasses > 0 ? (basicAttendedClasses / basicTotalClasses) * 100 : 0,
+      totalClasses: basicTotalClasses,
+      attendedClasses: basicAttendedClasses,
+      totalFutureClasses,
+      bunkedFutureClasses: 0
+    };
+  };
+
+  const calculateAttendance = () => {
+    // Start with basic attendance (no holidays/exams/bunks applied)
+    const basic = calculateBasicAttendance();
+    
+    // Load saved calendar data and global status
+    const savedData = localStorage.getItem('canibunk-calendar');
+    const allCalendarData = savedData ? JSON.parse(savedData) : {};
+    const subjectKey = `subject_${activeSubject}`;
+    const savedCalendarData = allCalendarData[subjectKey] || {};
+    
+    const globalData = localStorage.getItem('canibunk-global-status') || '{}';
+    const globalStatus = JSON.parse(globalData);
+    
+
+
+    // Start with basic totals
+    let adjustedTotalClasses = basic.totalClasses;
+    let adjustedAttendedClasses = basic.attendedClasses;
+
+    // Apply adjustments for each marked day
+    const semesterStart = new Date(semesterData.startDate);
+    const semesterEnd = new Date(semesterData.endDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const currentDate = new Date(semesterStart);
+    while (currentDate <= semesterEnd) {
+      const dayName = getDayName(currentDate);
+      const isWorkingDay = timetableData.workingDays.includes(dayName);
+      
+      if (isWorkingDay && currentDate >= today) {
         const dayClassCount = timetableData.timeSlots.filter(
           slot => slot.day === dayName && slot.courseId === activeSubject
         ).length;
         
-        // Find the day in calendar data
-        const calendarDay = calendarData.find(d => 
-          d.date.toDateString() === currentDate.toDateString()
-        );
-        
-        // If it's marked as holiday or exam, count it for exclusion
-        if (calendarDay && (calendarDay.status === 'holiday' || calendarDay.status === 'exam')) {
-          if (currentDate < today) {
-            // Past holiday/exam - subtract from original semester data
-            pastHolidayExamClasses += dayClassCount;
-          }
-          // We exclude these from calculations entirely
-        } else {
-          // Regular working day
-          if (currentDate >= today) {
-            // Future day - use calendar data for planning
-            futureClasses += dayClassCount;
-            
-            if (calendarDay) {
-              bunkedFutureClasses += calendarDay.bunkedClasses || 0;
-            }
+        if (dayClassCount > 0) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          const savedDay = savedCalendarData[dateStr];
+          const globalStatusForDate = globalStatus[dateStr];
+          
+          // Check if this day is marked as holiday/exam
+          if (globalStatusForDate === 'holiday' || globalStatusForDate === 'exam') {
+            // Subtract from both total and attended (these classes don't exist)
+            adjustedTotalClasses -= dayClassCount;
+            adjustedAttendedClasses -= dayClassCount;
+          } else if (savedDay?.bunkedClasses) {
+            // Subtract only from attended (these classes exist but will be bunked)
+            adjustedAttendedClasses -= savedDay.bunkedClasses;
           }
         }
       }
@@ -475,35 +582,33 @@ export default function Dashboard({
       currentDate.setDate(currentDate.getDate() + 1);
     }
 
-    // Adjust past classes by removing holidays/exams
-    const totalPastClasses = Math.max(0, selectedCourseData.totalClasses - pastHolidayExamClasses);
-    const attendedPastClasses = Math.min(selectedCourseData.attendedClasses, totalPastClasses);
+    // Calculate final percentages
+    const currentAttendance = basic.current; // Past attendance doesn't change
+    const predictedAttendance = adjustedTotalClasses > 0 
+      ? (adjustedAttendedClasses / adjustedTotalClasses) * 100 
+      : 0;
 
-    // Calculate totals
-    const totalClasses = totalPastClasses + futureClasses;
-    const attendedClasses = attendedPastClasses + (futureClasses - bunkedFutureClasses);
-    
-    // Current attendance (past classes only)
-    const currentAttendance = totalPastClasses > 0 
-      ? (attendedPastClasses / totalPastClasses) * 100 
-      : 0;
-    
-    // Predicted attendance (entire semester)
-    const predictedAttendance = totalClasses > 0 
-      ? (attendedClasses / totalClasses) * 100 
-      : 0;
+    // Calculate how many future classes were bunked
+    const originalFutureAttended = basic.totalFutureClasses || 0;
+    const adjustedFutureAttended = adjustedAttendedClasses - (basic.attendedClasses - originalFutureAttended);
+    const bunkedFutureClasses = Math.max(0, originalFutureAttended - adjustedFutureAttended);
 
     return {
       current: currentAttendance,
       predicted: predictedAttendance,
-      totalClasses,
-      attendedClasses,
-      totalFutureClasses: futureClasses,
+      totalClasses: adjustedTotalClasses,
+      attendedClasses: adjustedAttendedClasses,
+      totalFutureClasses: basic.totalFutureClasses || 0,
       bunkedFutureClasses
     };
   };
 
-  const attendance = calculateAttendance();
+  const attendance = useMemo(() => calculateAttendance(), [
+    activeSubject, 
+    semesterData, 
+    timetableData, 
+    calendarData
+  ]);
   const selectedCourseData = semesterData.courses.find(c => c.id === activeSubject);
 
   const navigateMonth = (direction: 'prev' | 'next') => {
@@ -562,7 +667,7 @@ export default function Dashboard({
       case 'exam':
         return 'status-exam hover:opacity-90';
       case 'normal':
-        return 'bg-muted/30 hover:bg-muted/50 border border-muted-foreground/30';
+        return 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border-2 border-slate-300 dark:border-slate-600';
       default:
         return 'bg-background hover:bg-muted';
     }
@@ -804,8 +909,7 @@ export default function Dashboard({
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="text-sm font-medium">
-                      {calendarData[clickedDay].date.toLocaleDateString('en-US', { 
-                        weekday: 'short', 
+                      {getDayName(calendarData[clickedDay].date).slice(0, 3)}, {calendarData[clickedDay].date.toLocaleDateString('en-US', { 
                         month: 'short', 
                         day: 'numeric' 
                       })}
