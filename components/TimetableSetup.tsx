@@ -8,7 +8,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { TimetableData, Course, TimeSlot } from '@/app/page';
-import ThemeToggle from '@/components/ThemeToggle';
 import { toast } from 'sonner';
 
 const COURSE_COLORS = [
@@ -29,13 +28,13 @@ export default function TimetableSetup({
 }) {
   const [step, setStep] = useState(1);
   const [workingDays, setWorkingDays] = useState<string[]>(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-  const [startTime, setStartTime] = useState('09:00');
-  const [endTime, setEndTime] = useState('17:00');
-  const [classDuration, setClassDuration] = useState(60);
-  const [breakStart, setBreakStart] = useState('10:30');
+  const [startTime, setStartTime] = useState('08:00');
+  const [endTime, setEndTime] = useState('16:00');
+  const [classDuration, setClassDuration] = useState(45);
+  const [breakStart, setBreakStart] = useState('10:15');
   const [breakEnd, setBreakEnd] = useState('10:45');
-  const [lunchStart, setLunchStart] = useState('12:00');
-  const [lunchEnd, setLunchEnd] = useState('13:00');
+  const [lunchStart, setLunchStart] = useState('13:00');
+  const [lunchEnd, setLunchEnd] = useState('13:45');
   const [courses, setCourses] = useState<Course[]>([]);
   const [newCourseName, setNewCourseName] = useState('');
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>([]);
@@ -54,7 +53,7 @@ export default function TimetableSetup({
       setTimeSlots(existingData.timeSlots);
       
       // Extract courses from time slots
-      const uniqueCourseIds = [...new Set(existingData.timeSlots.map(slot => slot.courseId).filter(Boolean))];
+      const uniqueCourseIds = Array.from(new Set(existingData.timeSlots.map(slot => slot.courseId).filter(Boolean)));
       const extractedCourses = uniqueCourseIds.map((courseId, index) => ({
         id: courseId!,
         name: courseId!,
@@ -182,7 +181,6 @@ export default function TimetableSetup({
               <p className="text-muted-foreground">Step {step} of 3</p>
             </div>
           </div>
-          <ThemeToggle />
         </div>
 
         {/* Step 1: Basic Settings */}

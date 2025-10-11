@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import ThemeToggle from '@/components/ThemeToggle';
-
 export default function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
   const [mounted, setMounted] = useState(false);
 
@@ -17,7 +15,6 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-card/50 relative overflow-hidden">
       {/* Theme Toggle */}
       <div className="absolute top-6 right-6 z-10">
-        <ThemeToggle />
       </div>
       
       {/* Background Elements */}

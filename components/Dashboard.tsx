@@ -4,12 +4,16 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Calendar, Settings, RotateCcw, BookOpen, TrendingUp, AlertTriangle } from 'lucide-react';
+
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
+import { Calendar, Settings, RotateCcw, BookOpen, TrendingUp, AlertTriangle, ChevronDown } from 'lucide-react';
 import { TimetableData, SemesterData } from '@/app/page';
-import ThemeToggle from '@/components/ThemeToggle';
 import { toast } from 'sonner';
 
-type DayStatus = 'attending' | 'bunking' | 'holiday' | 'exam';
+type DayStatus = 'attending' | 'bunking' | 'holiday' | 'exam' | 'normal';
 
 type CalendarDay = {
   date: Date;
@@ -30,12 +34,62 @@ export default function Dashboard({
   onEdit: () => void;
 }) {
   const [calendarData, setCalendarData] = useState<CalendarDay[]>([]);
-  const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [selectedCourse] = useState(semesterData.selectedCourse);
+  const [currentMonth, setCurrentMonth] = useState(() => {
+    // Start with the semester start month, or current month if within semester
+    const semStart = new Date(semesterData.startDate);
+    const now = new Date();
+    const semEnd = new Date(semesterData.endDate);
+    
+    if (now >= semStart && now <= semEnd) {
+      return now; // Current month if within semester
+    } else {
+      return semStart; // Otherwise start with semester start
+    }
+  });
+  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+  const [activeSubject, setActiveSubject] = useState<string>('');
+  const [selectedDayIndex, setSelectedDayIndex] = useState<number | null>(null);
+  const [bunkedClassesInput, setBunkedClassesInput] = useState(0);
+  const [clickCount, setClickCount] = useState(0);
+  const [clickTimer, setClickTimer] = useState<NodeJS.Timeout | null>(null);
+  const [targetAttendance, setTargetAttendance] = useState(75);
+  const [markingMode, setMarkingMode] = useState<'normal' | 'holiday' | 'exam'>('normal');
+  const [clickedDay, setClickedDay] = useState<number | null>(null);
+  const [clickPosition, setClickPosition] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    // Initialize selected courses from semester data
+    if (semesterData.selectedCourses) {
+      setSelectedCourses(semesterData.selectedCourses);
+      setActiveSubject(semesterData.selectedCourses[0] || '');
+    } else {
+      // Fallback for old data structure
+      setSelectedCourses([semesterData.selectedCourse]);
+      setActiveSubject(semesterData.selectedCourse);
+    }
+  }, [semesterData]);
 
   useEffect(() => {
     generateCalendarData();
-  }, [currentMonth, timetableData, semesterData]);
+  }, [currentMonth, timetableData, semesterData, activeSubject]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (clickedDay !== null) {
+        const popup = document.getElementById('bunk-popup');
+        if (popup && !popup.contains(event.target as Node)) {
+          setClickedDay(null);
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [clickedDay]);
+
+
 
   const generateCalendarData = () => {
     const startDate = new Date(semesterData.startDate);
@@ -48,13 +102,29 @@ export default function Dashboard({
     
     const calendarEnd = new Date(monthEnd);
     calendarEnd.setDate(calendarEnd.getDate() + (6 - monthEnd.getDay()));
+    
+    // Don't show dates beyond semester end
+    if (calendarEnd > endDate) {
+      calendarEnd.setTime(endDate.getTime());
+      // Extend to complete the week only if it's not too far
+      const endDayOfWeek = endDate.getDay();
+      if (endDayOfWeek < 6) {
+        calendarEnd.setDate(endDate.getDate() + (6 - endDayOfWeek));
+      }
+    }
 
     const days: CalendarDay[] = [];
     const currentDate = new Date(calendarStart);
 
-    // Load saved data
+    // Load saved data for current subject
     const savedData = localStorage.getItem('canibunk-calendar');
-    const savedCalendarData = savedData ? JSON.parse(savedData) : {};
+    const allCalendarData = savedData ? JSON.parse(savedData) : {};
+    const subjectKey = `subject_${activeSubject}`;
+    const savedCalendarData = allCalendarData[subjectKey] || {};
+    
+    // Load global holidays/exams
+    const globalData = localStorage.getItem('canibunk-global-status') || '{}';
+    const globalStatus = JSON.parse(globalData);
 
     while (currentDate <= calendarEnd) {
       const dateStr = currentDate.toISOString().split('T')[0];
@@ -65,12 +135,30 @@ export default function Dashboard({
       let classCount = 0;
       if (isInSemester && isWorkingDay) {
         classCount = timetableData.timeSlots.filter(
-          slot => slot.day === dayName && slot.courseId === selectedCourse
+          slot => slot.day === dayName && slot.courseId === activeSubject
         ).length;
       }
 
       const savedDay = savedCalendarData[dateStr];
-      const status: DayStatus = savedDay?.status || (isInSemester && isWorkingDay ? 'attending' : 'holiday');
+      const globalStatusForDate = globalStatus[dateStr];
+      
+      // Default status logic: 
+      // - If in semester and working day with classes: 'attending'
+      // - If no classes but in semester and working day: 'normal' 
+      // - If not in semester or not working day: 'normal'
+      let defaultStatus: DayStatus = 'normal';
+      if (isInSemester && isWorkingDay && classCount > 0) {
+        defaultStatus = 'attending';
+      }
+      
+      // Priority: Global status (holidays/exams) > saved subject data > default
+      let status: DayStatus;
+      if (globalStatusForDate === 'holiday' || globalStatusForDate === 'exam') {
+        status = globalStatusForDate;
+      } else {
+        status = savedDay?.status || defaultStatus;
+      }
+      
       const bunkedClasses = savedDay?.bunkedClasses || 0;
 
       days.push({
@@ -87,72 +175,97 @@ export default function Dashboard({
   };
 
   const saveCalendarData = (updatedData: CalendarDay[]) => {
-    const dataToSave: Record<string, any> = {};
+    // Load existing calendar data
+    const savedData = localStorage.getItem('canibunk-calendar');
+    const allCalendarData = savedData ? JSON.parse(savedData) : {};
+    
+    // Load global holidays/exams
+    const globalData = localStorage.getItem('canibunk-global-status') || '{}';
+    const globalStatus = JSON.parse(globalData);
+    
+    // Save data for current subject
+    const subjectKey = `subject_${activeSubject}`;
+    if (!allCalendarData[subjectKey]) {
+      allCalendarData[subjectKey] = {};
+    }
+    
     updatedData.forEach(day => {
       const dateStr = day.date.toISOString().split('T')[0];
-      dataToSave[dateStr] = {
+      
+      // Save subject-specific data
+      allCalendarData[subjectKey][dateStr] = {
         status: day.status,
         bunkedClasses: day.bunkedClasses
       };
+      
+      // Save holidays and exams globally (they apply to all subjects)
+      if (day.status === 'holiday' || day.status === 'exam') {
+        globalStatus[dateStr] = day.status;
+        
+        // Apply to all other subjects as well
+        selectedCourses.forEach(courseId => {
+          const otherSubjectKey = `subject_${courseId}`;
+          if (!allCalendarData[otherSubjectKey]) {
+            allCalendarData[otherSubjectKey] = {};
+          }
+          if (!allCalendarData[otherSubjectKey][dateStr]) {
+            allCalendarData[otherSubjectKey][dateStr] = { status: day.status, bunkedClasses: 0 };
+          } else {
+            allCalendarData[otherSubjectKey][dateStr].status = day.status;
+            if (day.status === 'holiday' || day.status === 'exam') {
+              allCalendarData[otherSubjectKey][dateStr].bunkedClasses = 0;
+            }
+          }
+        });
+      } else if (day.status === 'attending' || day.status === 'bunking') {
+        // Remove from global status if changing back to normal
+        delete globalStatus[dateStr];
+      }
     });
-    localStorage.setItem('canibunk-calendar', JSON.stringify(dataToSave));
+    
+    localStorage.setItem('canibunk-calendar', JSON.stringify(allCalendarData));
+    localStorage.setItem('canibunk-global-status', JSON.stringify(globalStatus));
   };
 
-  const handleDayClick = (dayIndex: number) => {
+  const handleDayClick = (dayIndex: number, event?: React.MouseEvent) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const semStart = new Date(semesterData.startDate);
+    const semEnd = new Date(semesterData.endDate);
+    const dayDate = calendarData[dayIndex].date;
     
-    if (calendarData[dayIndex].date < today) {
+    if (dayDate < today) {
       toast.error('Cannot modify past dates');
       return;
     }
-
-    const updatedData = [...calendarData];
-    const day = updatedData[dayIndex];
     
-    if (day.classCount === 0) {
-      toast.info('No classes scheduled for this day');
-      return;
-    }
-
-    if (day.status === 'holiday' || day.status === 'exam') {
-      toast.info('Cannot bunk on holidays or exam days');
-      return;
-    }
-
-    // Toggle between attending and bunking all classes
-    if (day.status === 'attending') {
-      day.status = 'bunking';
-      day.bunkedClasses = day.classCount;
-      toast.success(`Bunking all ${day.classCount} classes`);
-    } else {
-      day.status = 'attending';
-      day.bunkedClasses = 0;
-      toast.success('Attending all classes');
-    }
-
-    setCalendarData(updatedData);
-    saveCalendarData(updatedData);
-  };
-
-  const handleDayRightClick = (e: React.MouseEvent, dayIndex: number) => {
-    e.preventDefault();
-    
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    if (calendarData[dayIndex].date < today) {
-      toast.error('Cannot modify past dates');
+    if (dayDate < semStart || dayDate > semEnd) {
+      toast.error('Date is outside semester period');
       return;
     }
 
     const updatedData = [...calendarData];
     const day = updatedData[dayIndex];
 
-    if (e.shiftKey) {
-      // Shift + Right-click for exam periods
+    if (markingMode === 'holiday') {
+      // Holiday marking mode - cycle: normal/attending -> holiday -> normal
+      if (day.status === 'holiday') {
+        // Remove holiday - go back to normal state
+        day.status = 'normal';
+        day.bunkedClasses = 0;
+        toast.success('Removed holiday');
+      } else {
+        day.status = 'holiday';
+        day.bunkedClasses = 0;
+        toast.success('Marked as holiday');
+      }
+      setCalendarData(updatedData);
+      saveCalendarData(updatedData);
+    } else if (markingMode === 'exam') {
+      // Exam marking mode - cycle: normal/attending -> exam -> normal
       if (day.status === 'exam') {
-        day.status = day.classCount > 0 ? 'attending' : 'holiday';
+        // Remove exam - go back to normal state
+        day.status = 'normal';
         day.bunkedClasses = 0;
         toast.success('Removed exam period');
       } else {
@@ -160,47 +273,222 @@ export default function Dashboard({
         day.bunkedClasses = 0;
         toast.success('Marked as exam period');
       }
+      setCalendarData(updatedData);
+      saveCalendarData(updatedData);
     } else {
-      // Regular right-click for holidays
+      // Normal mode
       if (day.status === 'holiday') {
+        // If it's a holiday, convert back to normal first
         day.status = day.classCount > 0 ? 'attending' : 'holiday';
         day.bunkedClasses = 0;
-        toast.success('Marked as working day');
-      } else {
-        day.status = 'holiday';
+        toast.success('Converted from holiday to normal');
+        setCalendarData(updatedData);
+        saveCalendarData(updatedData);
+        return;
+      } else if (day.status === 'exam') {
+        // If it's an exam, convert back to normal first
+        day.status = day.classCount > 0 ? 'attending' : 'holiday';
         day.bunkedClasses = 0;
-        toast.success('Marked as holiday');
+        toast.success('Converted from exam to normal');
+        setCalendarData(updatedData);
+        saveCalendarData(updatedData);
+        return;
       }
-    }
 
+      // Normal bunk setting
+      if (day.classCount === 0) {
+        toast.info('No classes scheduled for this day');
+        return;
+      }
+
+      // Show click popup for bunk input
+      if (event) {
+        setClickPosition({ x: event.clientX, y: event.clientY });
+      }
+      setSelectedDayIndex(dayIndex);
+      setBunkedClassesInput(day.bunkedClasses || 0);
+      setClickedDay(dayIndex);
+    }
+  };
+
+
+
+
+
+  const handlePartialBunkSubmit = () => {
+    if (selectedDayIndex === null) return;
+    
+    const updatedData = [...calendarData];
+    const day = updatedData[selectedDayIndex];
+    
+    // Validate input
+    if (bunkedClassesInput < 0 || bunkedClassesInput > day.classCount) {
+      toast.error(`Please enter a number between 0 and ${day.classCount}`);
+      return;
+    }
+    
+    // Update day status based on bunked classes
+    if (bunkedClassesInput === 0) {
+      day.status = 'attending';
+    } else if (bunkedClassesInput === day.classCount) {
+      day.status = 'bunking';
+    } else {
+      day.status = 'bunking'; // Partial bunking is still considered bunking
+    }
+    
+    day.bunkedClasses = bunkedClassesInput;
+    
     setCalendarData(updatedData);
     saveCalendarData(updatedData);
+    setSelectedDayIndex(null);
+    setBunkedClassesInput(0);
+    
+    if (bunkedClassesInput === 0) {
+      toast.success('Attending all classes');
+    } else if (bunkedClassesInput === day.classCount) {
+      toast.success(`Bunking all ${day.classCount} classes`);
+    } else {
+      toast.success(`Bunking ${bunkedClassesInput} out of ${day.classCount} classes`);
+    }
+  };
+
+  const resetAttendance = () => {
+    // Reset only attendance data for all courses
+    const updatedCourses = semesterData.courses.map(course => ({
+      ...course,
+      totalClasses: 0,
+      attendedClasses: 0
+    }));
+    
+    const updatedSemesterData = {
+      ...semesterData,
+      courses: updatedCourses
+    };
+    
+    localStorage.setItem('canibunk-semester', JSON.stringify(updatedSemesterData));
+    toast.success('Attendance data reset successfully');
+    window.location.reload(); // Reload to reflect changes
+  };
+
+  const resetCalendar = () => {
+    // Reset only calendar data
+    localStorage.removeItem('canibunk-calendar');
+    localStorage.removeItem('canibunk-global-status');
+    generateCalendarData();
+    toast.success('Calendar data reset successfully');
+  };
+
+  const resetTimetable = () => {
+    // Reset only timetable data
+    localStorage.removeItem('canibunk-timetable');
+    toast.success('Timetable data reset successfully');
+    onEdit(); // Go back to setup
+  };
+
+  const resetSemester = () => {
+    // Reset only semester data
+    localStorage.removeItem('canibunk-semester');
+    toast.success('Semester data reset successfully');
+    onEdit(); // Go back to setup
+  };
+
+  const resetAll = () => {
+    // Reset everything
+    localStorage.removeItem('canibunk-timetable');
+    localStorage.removeItem('canibunk-semester');
+    localStorage.removeItem('canibunk-calendar');
+    localStorage.removeItem('canibunk-global-status');
+    toast.success('All data reset successfully');
+    onReset();
+  };
+
+  const calculateSmartBunk = () => {
+    const attendanceData = calculateAttendance();
+    const selectedCourseData = semesterData.courses.find(c => c.id === activeSubject);
+    if (!selectedCourseData || attendanceData.totalClasses === 0) return 0;
+
+    // Use predicted attendance values from calculateAttendance
+    const predictedTotalClasses = attendanceData.totalClasses;
+    const predictedAttendedClasses = attendanceData.attendedClasses;
+    
+    // Calculate minimum classes needed to maintain target attendance
+    const minRequiredClasses = Math.ceil((targetAttendance / 100) * predictedTotalClasses);
+    
+    // Classes that can still be bunked = currently predicted attended - minimum required
+    // This represents how many more classes can be bunked from the current prediction
+    const maxBunkable = Math.max(0, predictedAttendedClasses - minRequiredClasses);
+    
+    return maxBunkable;
   };
 
   const calculateAttendance = () => {
-    const selectedCourseData = semesterData.courses.find(c => c.id === selectedCourse);
+    const selectedCourseData = semesterData.courses.find(c => c.id === activeSubject);
     if (!selectedCourseData) return { current: 0, predicted: 0, totalClasses: 0, attendedClasses: 0 };
 
-    let totalFutureClasses = 0;
-    let bunkedFutureClasses = 0;
-    
+    const semesterStart = new Date(semesterData.startDate);
+    const semesterEnd = new Date(semesterData.endDate);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    calendarData.forEach(day => {
-      if (day.date >= today && day.status !== 'holiday' && day.status !== 'exam') {
-        totalFutureClasses += day.classCount;
-        bunkedFutureClasses += day.bunkedClasses;
-      }
-    });
+    // Calculate past holidays/exams to adjust the original semester data
+    let pastHolidayExamClasses = 0;
+    let futureClasses = 0;
+    let bunkedFutureClasses = 0;
 
-    const totalClasses = selectedCourseData.totalClasses + totalFutureClasses;
-    const attendedClasses = selectedCourseData.attendedClasses + (totalFutureClasses - bunkedFutureClasses);
+    // Generate all days in the semester to count holidays/exams and future classes
+    const currentDate = new Date(semesterStart);
+    while (currentDate <= semesterEnd) {
+      const dayName = currentDate.toLocaleDateString('en-US', { weekday: 'long' });
+      const isWorkingDay = timetableData.workingDays.includes(dayName);
+      
+      if (isWorkingDay) {
+        // Count classes for this day
+        const dayClassCount = timetableData.timeSlots.filter(
+          slot => slot.day === dayName && slot.courseId === activeSubject
+        ).length;
+        
+        // Find the day in calendar data
+        const calendarDay = calendarData.find(d => 
+          d.date.toDateString() === currentDate.toDateString()
+        );
+        
+        // If it's marked as holiday or exam, count it for exclusion
+        if (calendarDay && (calendarDay.status === 'holiday' || calendarDay.status === 'exam')) {
+          if (currentDate < today) {
+            // Past holiday/exam - subtract from original semester data
+            pastHolidayExamClasses += dayClassCount;
+          }
+          // We exclude these from calculations entirely
+        } else {
+          // Regular working day
+          if (currentDate >= today) {
+            // Future day - use calendar data for planning
+            futureClasses += dayClassCount;
+            
+            if (calendarDay) {
+              bunkedFutureClasses += calendarDay.bunkedClasses || 0;
+            }
+          }
+        }
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    // Adjust past classes by removing holidays/exams
+    const totalPastClasses = Math.max(0, selectedCourseData.totalClasses - pastHolidayExamClasses);
+    const attendedPastClasses = Math.min(selectedCourseData.attendedClasses, totalPastClasses);
+
+    // Calculate totals
+    const totalClasses = totalPastClasses + futureClasses;
+    const attendedClasses = attendedPastClasses + (futureClasses - bunkedFutureClasses);
     
-    const currentAttendance = selectedCourseData.totalClasses > 0 
-      ? (selectedCourseData.attendedClasses / selectedCourseData.totalClasses) * 100 
+    // Current attendance (past classes only)
+    const currentAttendance = totalPastClasses > 0 
+      ? (attendedPastClasses / totalPastClasses) * 100 
       : 0;
     
+    // Predicted attendance (entire semester)
     const predictedAttendance = totalClasses > 0 
       ? (attendedClasses / totalClasses) * 100 
       : 0;
@@ -210,32 +498,58 @@ export default function Dashboard({
       predicted: predictedAttendance,
       totalClasses,
       attendedClasses,
-      totalFutureClasses,
+      totalFutureClasses: futureClasses,
       bunkedFutureClasses
     };
   };
 
   const attendance = calculateAttendance();
-  const selectedCourseData = semesterData.courses.find(c => c.id === selectedCourse);
+  const selectedCourseData = semesterData.courses.find(c => c.id === activeSubject);
 
   const navigateMonth = (direction: 'prev' | 'next') => {
+    const semStart = new Date(semesterData.startDate);
+    const semEnd = new Date(semesterData.endDate);
+    
     setCurrentMonth(prev => {
-      const newMonth = new Date(prev);
       if (direction === 'prev') {
-        newMonth.setMonth(newMonth.getMonth() - 1);
+        // Check if we can go to previous month
+        const prevMonth = new Date(prev);
+        prevMonth.setMonth(prevMonth.getMonth() - 1);
+        
+        // Don't go before semester start month
+        if (prevMonth.getFullYear() < semStart.getFullYear() || 
+           (prevMonth.getFullYear() === semStart.getFullYear() && prevMonth.getMonth() < semStart.getMonth())) {
+          return prev; // Stay at current month
+        }
+        return prevMonth;
       } else {
-        newMonth.setMonth(newMonth.getMonth() + 1);
+        // Check if we can go to next month
+        const nextMonth = new Date(prev);
+        nextMonth.setMonth(nextMonth.getMonth() + 1);
+        
+        // Don't go after semester end month
+        if (nextMonth.getFullYear() > semEnd.getFullYear() || 
+           (nextMonth.getFullYear() === semEnd.getFullYear() && nextMonth.getMonth() > semEnd.getMonth())) {
+          return prev; // Stay at current month
+        }
+        return nextMonth;
       }
-      return newMonth;
     });
   };
 
   const getDayStatusColor = (day: CalendarDay) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const semStart = new Date(semesterData.startDate);
+    const semEnd = new Date(semesterData.endDate);
     
     if (day.date < today) {
       return 'bg-muted text-muted-foreground';
+    }
+    
+    // Gray out dates outside semester
+    if (day.date < semStart || day.date > semEnd) {
+      return 'bg-muted/20 text-muted-foreground cursor-not-allowed';
     }
     
     switch (day.status) {
@@ -247,6 +561,8 @@ export default function Dashboard({
         return 'status-holiday hover:opacity-90';
       case 'exam':
         return 'status-exam hover:opacity-90';
+      case 'normal':
+        return 'bg-muted/30 hover:bg-muted/50 border border-muted-foreground/30';
       default:
         return 'bg-background hover:bg-muted';
     }
@@ -264,7 +580,7 @@ export default function Dashboard({
           <div>
             <h1 className="text-3xl font-bold">CanIBunk Dashboard</h1>
             <p className="text-muted-foreground">
-              Tracking: {selectedCourseData?.name}
+              Tracking: {semesterData.courses.find(c => c.id === activeSubject)?.name || 'No subject selected'}
             </p>
           </div>
           <div className="flex items-center space-x-2">
@@ -272,13 +588,70 @@ export default function Dashboard({
               <Settings className="h-4 w-4 mr-2" />
               Edit Setup
             </Button>
-            <Button variant="outline" onClick={onReset}>
-              <RotateCcw className="h-4 w-4 mr-2" />
-              Reset
-            </Button>
-            <ThemeToggle />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline">
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Reset
+                  <ChevronDown className="h-4 w-4 ml-2" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={resetAttendance}>
+                  <BookOpen className="h-4 w-4 mr-2" />
+                  Reset Attendance Only
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={resetCalendar}>
+                  <Calendar className="h-4 w-4 mr-2" />
+                  Reset Calendar Data
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={resetTimetable}>
+                  <Settings className="h-4 w-4 mr-2" />
+                  Reset Timetable
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={resetSemester}>
+                  <TrendingUp className="h-4 w-4 mr-2" />
+                  Reset Semester Data
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={resetAll} className="text-destructive">
+                  <AlertTriangle className="h-4 w-4 mr-2" />
+                  Reset Everything
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
+
+        {/* Subject Selection Tabs */}
+        {selectedCourses.length > 1 && (
+          <Tabs value={activeSubject} onValueChange={setActiveSubject}>
+            <TabsList className="inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground w-full overflow-x-auto">
+              <div className="flex space-x-1 min-w-full">
+                {selectedCourses.map(courseId => {
+                  const course = semesterData.courses.find(c => c.id === courseId);
+                  if (!course) return null;
+                  return (
+                    <TabsTrigger 
+                      key={courseId} 
+                      value={courseId} 
+                      className="flex items-center space-x-2 whitespace-nowrap flex-shrink-0 min-w-fit px-3"
+                    >
+                      <div 
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: course.color }}
+                      />
+                      <span className="truncate max-w-[120px]">{course.name}</span>
+                    </TabsTrigger>
+                  );
+                })}
+              </div>
+            </TabsList>
+          </Tabs>
+        )}
+
+
 
         {/* Stats Cards */}
         <div className="grid md:grid-cols-3 gap-6">
@@ -310,13 +683,25 @@ export default function Dashboard({
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Classes to Bunk</CardTitle>
+              <CardTitle className="text-sm font-medium">Smart Bunk Calculator</CardTitle>
               <AlertTriangle className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{attendance.bunkedFutureClasses}</div>
+            <CardContent className="space-y-3">
+              <div className="flex items-center space-x-2">
+                <Label htmlFor="targetAttendance" className="text-xs">Target %:</Label>
+                <Input
+                  id="targetAttendance"
+                  type="number"
+                  min="60"
+                  max="100"
+                  value={targetAttendance}
+                  onChange={(e) => setTargetAttendance(Number(e.target.value))}
+                  className="w-16 h-6 text-xs"
+                />
+              </div>
+              <div className="text-2xl font-bold">{calculateSmartBunk()}</div>
               <p className="text-xs text-muted-foreground">
-                Out of {attendance.totalFutureClasses} future classes
+                More classes you can bunk from predicted ({attendance.predicted.toFixed(1)}%)
               </p>
             </CardContent>
           </Card>
@@ -333,10 +718,32 @@ export default function Dashboard({
                 </CardTitle>
               </div>
               <div className="flex items-center space-x-2">
-                <Button variant="outline" size="sm" onClick={() => navigateMonth('prev')}>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => navigateMonth('prev')}
+                  disabled={(() => {
+                    const semStart = new Date(semesterData.startDate);
+                    // Disable if current month is the same as or before semester start month
+                    return currentMonth.getFullYear() < semStart.getFullYear() || 
+                           (currentMonth.getFullYear() === semStart.getFullYear() && 
+                            currentMonth.getMonth() <= semStart.getMonth());
+                  })()}
+                >
                   ←
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => navigateMonth('next')}>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => navigateMonth('next')}
+                  disabled={(() => {
+                    const semEnd = new Date(semesterData.endDate);
+                    // Disable if current month is the same as or after semester end month
+                    return currentMonth.getFullYear() > semEnd.getFullYear() || 
+                           (currentMonth.getFullYear() === semEnd.getFullYear() && 
+                            currentMonth.getMonth() >= semEnd.getMonth());
+                  })()}
+                >
                   →
                 </Button>
               </div>
@@ -351,56 +758,187 @@ export default function Dashboard({
                 </div>
               ))}
               
-              {calendarData.map((day, index) => (
+              {calendarData.map((day, index) => {
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const semStart = new Date(semesterData.startDate);
+                const semEnd = new Date(semesterData.endDate);
+                const dayDate = new Date(day.date);
+                dayDate.setHours(0, 0, 0, 0);
+                const isPastDate = dayDate < today;
+                const isOutsideSemester = dayDate < semStart || dayDate > semEnd;
+                
+                return (
+                  <button
+                    key={index}
+                    onClick={(e) => !isPastDate && !isOutsideSemester && handleDayClick(index, e)}
+                    className={`
+                      p-2 text-sm rounded-lg transition-all duration-200 min-h-[60px] flex flex-col items-center justify-center relative
+                      ${getDayStatusColor(day)}
+                      ${!isCurrentMonth(day.date) ? 'opacity-30' : ''}
+                      ${isPastDate || isOutsideSemester ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+                    `}
+                  >
+                    <span className="font-medium">{day.date.getDate()}</span>
+                    {day.classCount > 0 && (
+                      <span className="text-xs opacity-75">
+                        {day.status === 'bunking' ? `${day.bunkedClasses || 0}/${day.classCount}` : day.classCount}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Click Popup for Bunk Input */}
+            {clickedDay !== null && markingMode === 'normal' && calendarData[clickedDay] && (
+              <div 
+                id="bunk-popup"
+                className="fixed z-50 bg-popover border rounded-lg shadow-lg p-3 min-w-[220px]"
+                style={{ 
+                  left: `${Math.max(10, Math.min(clickPosition.x - 110, window.innerWidth - 240))}px`,
+                  top: `${Math.max(10, clickPosition.y - 100)}px`,
+                  pointerEvents: 'auto'
+                }}
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium">
+                      {calendarData[clickedDay].date.toLocaleDateString('en-US', { 
+                        weekday: 'short', 
+                        month: 'short', 
+                        day: 'numeric' 
+                      })}
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setClickedDay(null)}
+                      className="h-6 w-6 p-0"
+                    >
+                      ×
+                    </Button>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Classes: {calendarData[clickedDay].classCount}
+                  </div>
+                  
+                  {/* Smart Bunk Info */}
+                  <div className="text-xs p-2 bg-muted rounded text-center">
+                    <span className="font-medium">Smart Bunk: </span>
+                    <span className="text-primary font-bold">{calculateSmartBunk()}</span>
+                    <span className="text-muted-foreground"> classes left for {targetAttendance}%</span>
+                  </div>
+                  
+                  <div className="flex items-center space-x-2">
+                    <Label htmlFor="bunk-input" className="text-xs">Bunk:</Label>
+                    <Input
+                      id="bunk-input"
+                      type="number"
+                      min="0"
+                      max={calendarData[clickedDay].classCount}
+                      value={bunkedClassesInput}
+                      onChange={(e) => setBunkedClassesInput(Number(e.target.value))}
+                      className="w-16 h-6 text-xs"
+                      autoFocus
+                    />
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        handlePartialBunkSubmit();
+                        setClickedDay(null);
+                      }}
+                      className="h-6 px-2 text-xs"
+                    >
+                      Bunk
+                    </Button>
+                  </div>
+                  <div className="flex space-x-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        // Directly set to 0 and apply
+                        const updatedData = [...calendarData];
+                        const day = updatedData[clickedDay];
+                        day.status = 'attending';
+                        day.bunkedClasses = 0;
+                        setCalendarData(updatedData);
+                        saveCalendarData(updatedData);
+                        setClickedDay(null);
+                        toast.success('Attending all classes');
+                      }}
+                      className="h-6 px-3 text-xs flex-1"
+                    >
+                      Attend All
+                    </Button>
+                    {calculateSmartBunk() > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setBunkedClassesInput(Math.min(calculateSmartBunk(), calendarData[clickedDay].classCount));
+                          handlePartialBunkSubmit();
+                          setClickedDay(null);
+                        }}
+                        className="h-6 px-3 text-xs bg-green-50 hover:bg-green-100 flex-1"
+                      >
+                        Smart Bunk
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Interactive Legend / Mode Selector */}
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2 text-sm">
                 <button
-                  key={index}
-                  onClick={() => handleDayClick(index)}
-                  onContextMenu={(e) => handleDayRightClick(e, index)}
-                  className={`
-                    p-2 text-sm rounded-lg transition-all duration-200 min-h-[60px] flex flex-col items-center justify-center
-                    ${getDayStatusColor(day)}
-                    ${!isCurrentMonth(day.date) ? 'opacity-30' : ''}
-                    ${day.classCount > 0 ? 'cursor-pointer' : 'cursor-default'}
-                  `}
-                  disabled={day.date < new Date()}
+                  onClick={() => setMarkingMode('normal')}
+                  className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-all ${
+                    markingMode === 'normal' 
+                      ? 'bg-primary text-primary-foreground' 
+                      : 'bg-muted hover:bg-muted/80'
+                  }`}
                 >
-                  <span className="font-medium">{day.date.getDate()}</span>
-                  {day.classCount > 0 && (
-                    <span className="text-xs opacity-75">
-                      {day.status === 'bunking' ? `${day.bunkedClasses}/${day.classCount}` : day.classCount}
-                    </span>
-                  )}
+                  <div className="w-4 h-4 status-attending rounded"></div>
+                  <span>Normal Mode</span>
                 </button>
-              ))}
-            </div>
-
-            {/* Legend */}
-            <div className="flex flex-wrap gap-4 text-sm">
-              <div className="flex items-center space-x-2">
-                <div className="w-4 h-4 status-attending rounded"></div>
-                <span>Attending</span>
+                <button
+                  onClick={() => setMarkingMode('holiday')}
+                  className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-all ${
+                    markingMode === 'holiday' 
+                      ? 'bg-orange-500 text-white hover:bg-orange-600' 
+                      : 'bg-muted hover:bg-muted/80'
+                  }`}
+                >
+                  <div className="w-4 h-4 status-holiday rounded"></div>
+                  <span>Mark Holidays</span>
+                </button>
+                <button
+                  onClick={() => setMarkingMode('exam')}
+                  className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-all ${
+                    markingMode === 'exam' 
+                      ? 'bg-purple-500 text-white hover:bg-purple-600' 
+                      : 'bg-muted hover:bg-muted/80'
+                  }`}
+                >
+                  <div className="w-4 h-4 status-exam rounded"></div>
+                  <span>Mark Exams</span>
+                </button>
               </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-4 h-4 status-bunking rounded"></div>
-                <span>Bunking</span>
+              
+              <div className="text-xs text-muted-foreground">
+                {markingMode === 'normal' && '• Click dates to set bunk classes • Hover for quick input'}
+                {markingMode === 'holiday' && '• Click dates to mark/unmark holidays'}
+                {markingMode === 'exam' && '• Click dates to mark/unmark exam periods'}
               </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-4 h-4 status-holiday rounded"></div>
-                <span>Holiday</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-4 h-4 status-exam rounded"></div>
-                <span>Exam Period</span>
-              </div>
-            </div>
-
-            <div className="mt-4 text-sm text-muted-foreground">
-              <p>• Click to toggle bunking all classes</p>
-              <p>• Right-click to mark as holiday</p>
-              <p>• Shift + Right-click to mark as exam period</p>
             </div>
           </CardContent>
         </Card>
+
+
       </div>
     </div>
   );
